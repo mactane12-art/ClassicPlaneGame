@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en" >
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Plane Game with Menu, Pause, Restart, Difficulty</title>
+  <style>
+    body {
+      margin: 0; 
+      overflow: hidden;
+      background: #003;
+      color: white;
+      font-family: monospace;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background: linear-gradient(#005, #001);
+      border: 2px solid #0af;
+    }
+    #info {
+      text-align: center;
+      margin-top: 5px;
+    }
+    #menu {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      background: rgba(0,0,0,0.85);
+      padding: 30px 50px;
+      border: 2px solid #0af;
+      border-radius: 10px;
+      user-select: none;
+    }
+    #menu h1 {
+      margin-bottom: 20px;
+      font-size: 48px;
+      color: #0af;
+    }
+    #startBtn {
+      background: #0af;
+      border: none;
+      color: #001;
+      font-size: 24px;
+      padding: 10px 30px;
+      cursor: pointer;
+      border-radius: 6px;
+      transition: background 0.3s;
+      margin-top: 15px;
+    }
+    #startBtn:hover {
+      background: #05c;
+      color: #fff;
+    }
+    label {
+      font-size: 18px;
+      margin-right: 10px;
+    }
+    select {
+      font-size: 18px;
+      padding: 5px 10px;
+      border-radius: 6px;
+      border: 1px solid #0af;
+      background: #001;
+      color: white;
+      cursor: pointer;
+    }
+    #controls {
+      margin-top: 10px;
+      text-align: center;
+    }
+    button.game-btn {
+      background: #0af;
+      border: none;
+      color: #001;
+      font-size: 18px;
+      padding: 8px 20px;
+      margin: 0 10px;
+      cursor: pointer;
+      border-radius: 6px;
+      transition: background 0.3s;
+    }
+    button.game-btn:hover {
+      background: #05c;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+
+<div id="menu">
+  <h1>Plane Game</h1>
+  <label for="difficulty">Select Difficulty:</label>
+  <select id="difficulty">
+    <option value="easy">Easy</option>
+    <option value="medium" selected>Medium</option>
+    <option value="hard">Hard</option>
+  </select>
+  <br />
+  <button id="startBtn">Start Game</button>
+</div>
+
+<canvas id="game" width="480" height="640" style="display:none;"></canvas>
+<div id="info" style="display:none;">
+  Use arrow keys to move, spacebar to shoot.<br />
+  Survive & shoot enemy planes!
+</div>
+<div id="controls" style="text-align:center; margin-top:5px; display:none;">
+  <button id="pauseBtn" class="game-btn">Pause</button>
+  <button id="restartBtn" class="game-btn">Restart</button>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const menu = document.getElementById('menu');
+  const startBtn = document.getElementById('startBtn');
+  const info = document.getElementById('info');
+  const controls = document.getElementById('controls');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  const difficultySelect = document.getElementById('difficulty');
+
+  const WIDTH = canvas.width;
+  const HEIGHT = canvas.height;
+
+  let keys = {};
+  let score = 0;
+  let gameOver = false;
+  let running = false;
+  let paused = false;
+
+  let enemySpawnRate = 0.02;
+  let enemySpeedBase = 2;
+
+  // player plane
+  const player = {
+    x: WIDTH / 2,
+    y: HEIGHT - 60,
+    width: 40,
+    height: 40,
+    speed: 5,
+    bullets: [],
+    shootCooldown: 0,
+  };
+
+  // enemy planes
+  const enemies = [];
+  const enemyBullets = [];
+
+  function drawPlane(x, y, color = 'lime') {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - 15, y + 40);
+    ctx.lineTo(x + 15, y + 40);
+    ctx.closePath();
+    ctx.fill();
+    // cockpit
+    ctx.fillStyle = 'white';
+    ctx.fillRect(x - 5, y + 10, 10, 15);
+  }
+
+  function drawBullet(b) {
+    ctx.fillStyle = 'yellow';
+    ctx.fillRect(b.x - 2, b.y - 10, 4, 10);
+  }
+
+  function drawEnemy(x, y) {
+    ctx.fillStyle = 'red';
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - 15, y + 30);
+    ctx.lineTo(x + 15, y + 30);
+    ctx.closePath();
+    ctx.fill();
+    // cockpit
+    ctx.fillStyle = 'orange';
+    ctx.fillRect(x - 4, y + 10, 8, 10);
+  }
+
+  function drawEnemyBullet(b) {
+    ctx.fillStyle = 'orange';
+    ctx.fillRect(b.x - 3, b.y, 6, 12);
+  }
+
+  function createPlayerBullet(x, y) {
+    return { x, y, width: 4, height: 10, speed: 10 };
+  }
+
+  function createEnemyBullet(x, y) {
+    return { x, y, width: 6, height: 12, speed: 5 };
+  }
+
+  function createEnemy() {
+    const x = Math.random() * (WIDTH - 30) + 15;
+    const y = -30;
+    const width = 30;
+    const height = 30;
+    const speed = enemySpeedBase + Math.random() * (difficulty === 'hard' ? 2 : 1.5);
+    return { x, y, width, height, speed, shootCooldown: 0 };
+  }
+
+  function resetGame() {
+    score = 0;
+    gameOver = false;
+    player.x = WIDTH / 2;
+    player.y = HEIGHT - 60;
+    player.bullets.length = 0;
+    player.shootCooldown = 0;
+    enemies.length = 0;
+    enemyBullets.length = 0;
+    paused = false;
+    pauseBtn.textContent = 'Pause';
+  }
+
+  function update() {
+    if (!running || gameOver || paused) return;
+
+    // move player
+    if (keys['ArrowLeft'] && player.x - player.width / 2 > 0) {
+      player.x -= player.speed;
+    }
+    if (keys['ArrowRight'] && player.x + player.width / 2 < WIDTH) {
+      player.x += player.speed;
+    }
+    if (keys['ArrowUp'] && player.y - player.height / 2 > 0) {
+      player.y -= player.speed;
+    }
+    if (keys['ArrowDown'] && player.y + player.height / 2 < HEIGHT) {
+      player.y += player.speed;
+    }
+
+    // shoot bullet
+    if (keys[' ']) {
+      if (!player.shootCooldown || player.shootCooldown <= 0) {
+        player.bullets.push(createPlayerBullet(player.x, player.y - 20));
+        player.shootCooldown = 15;
+      }
+    }
+    if (player.shootCooldown > 0) player.shootCooldown--;
+
+    // update bullets
+    player.bullets.forEach((b, i) => {
+      b.y -= b.speed;
+      if (b.y < -10) player.bullets.splice(i, 1);
+    });
+
+    // spawn enemies randomly based on difficulty spawn rate
+    if (Math.random() < enemySpawnRate) {
+      enemies.push(createEnemy());
+    }
+    enemies.forEach((e, i) => {
+      e.y += e.speed;
+      if (e.y > HEIGHT + 30) enemies.splice(i, 1);
+
+      if (e.shootCooldown <= 0) {
+        enemyBullets.push(createEnemyBullet(e.x, e.y + 30));
+        e.shootCooldown = 100 + Math.random() * 100;
+      } else {
+        e.shootCooldown--;
+      }
+    });
+
+    // update enemy bullets
+    enemyBullets.forEach((b, i) => {
+      b.y += b.speed;
+      if (b.y > HEIGHT + 20) enemyBullets.splice(i, 1);
+    });
+
+    // bullet collisions with enemies
+    player.bullets.forEach((b, bi) => {
+      enemies.forEach((e, ei) => {
+        if (
+          b.x > e.x - e.width / 2 &&
+          b.x < e.x + e.width / 2 &&
+          b.y > e.y &&
+          b.y < e.y + e.height
+        ) {
+          enemies.splice(ei, 1);
+          player.bullets.splice(bi, 1);
+          score += 10;
+        }
+      });
+    });
+
+    // enemy bullets hit player
+    enemyBullets.forEach((b) => {
+      const px = player.x - player.width / 2;
+      const py = player.y;
+      if (
+        b.x > px &&
+        b.x < px + player.width &&
+        b.y > py &&
+        b.y < py + player.height
+      ) {
+        gameOver = true;
+      }
+    });
+
+    // enemy planes collide with player
+    enemies.forEach((e) => {
+      const px = player.x - player.width / 2;
+      const py = player.y;
+      if (
+        e.x + e.width / 2 > px &&
+        e.x - e.width / 2 < px + player.width &&
+        e.y + e.height > py &&
+        e.y < py + player.height
+      ) {
+        gameOver = true;
+      }
+    });
+  }
+
+  function draw() {
+    if (!running) return;
+    ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+    drawPlane(player.x, player.y);
+    player.bullets.forEach(drawBullet);
+    enemies.forEach(e => drawEnemy(e.x, e.y));
+    enemyBullets.forEach(drawEnemyBullet);
+
+    ctx.fillStyle = 'white';
+    ctx.font = '20px monospace';
+    ctx.fillText('Score: ' + score, 10, 30);
+
+    if (gameOver) {
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+      ctx.fillStyle = 'red';
+      ctx.font = '48px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('GAME OVER', WIDTH / 2, HEIGHT / 2 - 20);
+      ctx.font = '24px monospace';
+      ctx.fillText('Press Restart to play again', WIDTH / 2, HEIGHT / 2 + 20);
+    }
+
+    if (paused && !gameOver) {
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+      ctx.fillStyle = 'yellow';
+      ctx.font = '48px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('PAUSED', WIDTH / 2, HEIGHT / 2);
+    }
+  }
+
+  function loop() {
+    if (running) {
+      update();
+      draw();
+    }
+    requestAnimationFrame(loop);
+  }
+
+  let difficulty = 'medium';
+
+  startBtn.addEventListener('click', () => {
+    difficulty = difficultySelect.value;
+    // set difficulty parameters
+    switch(difficulty) {
+      case 'easy':
+        enemySpawnRate = 0.01;
+        enemySpeedBase = 1.5;
+        break;
+      case 'medium':
+        enemySpawnRate = 0.02;
+        enemySpeedBase = 2;
+        break;
+      case 'hard':
+        enemySpawnRate = 0.04;
+        enemySpeedBase = 3;
+        break;
+    }
+    menu.style.display = 'none';
+    canvas.style.display = 'block';
+    info.style.display = 'block';
+    controls.style.display = 'block';
+    resetGame();
+    running = true;
+  });
+
+  pauseBtn.addEventListener('click', () => {
+    if (!running || gameOver) return;
+    paused = !paused;
+    pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+  });
+
+  restartBtn.addEventListener('click', () => {
+    if (!running) return;
+    resetGame();
+  });
+
+  window.addEventListener('keydown', e => {
+    if (e.key === ' ') e.preventDefault();
+    keys[e.key] = true;
+  });
+  window.addEventListener('keyup', e => {
+    keys[e.key] = false;
+  });
+
+  loop();
+})();
+</script>
+
+</body>
+</html>
