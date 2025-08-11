@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Untitled cube game</title>
+<style>
+  body, html {
+    margin: 0; padding: 0; overflow: hidden;
+    background: linear-gradient(135deg, #0a1a2b, #001529);
+    font-family: 'Consolas', monospace;
+    color: white;
+    user-select: none;
+  }
+  canvas {
+    display: block;
+    background: transparent;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  let width, height;
+
+  // resize canvas
+  function resize() {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvas.width = width;
+    canvas.height = height;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // helpers
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+  function roundRectStroke(ctx, x, y, w, h, r) {
+    roundRect(ctx, x, y, w, h, r);
+    ctx.stroke();
+  }
+  function pointInRect(px, py, rx, ry, rw, rh) {
+    return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh;
+  }
+
+  // variables
+  let mouseX = 0, mouseY = 0, mouseDown = false;
+  window.addEventListener('mousemove', e => {
+    mouseX = e.clientX;
+    mouseY = e.clientY;
+  });
+  window.addEventListener('mousedown', e => { mouseDown = true; });
+  window.addEventListener('mouseup', e => { mouseDown = false; });
+
+  // states
+  const states = {
+    MENU: 'menu',
+    DIFFICULTY: 'difficulty',
+    OPTIONS: 'options',
+    STORE: 'store',
+    GAME: 'game',
+    PAUSED: 'paused',
+    DEATH: 'death',
+  };
+  let currentState = states.MENU;
+
+  // music setup
+  const music = new Audio('https://archive.org/download/UndertaleSoundtrack/Undertale%20OST%20-%20Megalovania.mp3');
+  music.crossOrigin = 'anonymous';
+  music.loop = true;
+  let musicOn = true;
+  let musicVolume = 0.5;
+  music.volume = musicVolume;
+
+  // player & game data
+  const rebirthCost = 500;
+  let score = 0;
+  let lastScoreTime = performance.now();
+
+  const difficulties = {
+    easy: { bulletSpawnChance: 0.01, pointsPerSecond: 1 },
+    medium: { bulletSpawnChance: 0.02, pointsPerSecond: 2 },
+    harder: { bulletSpawnChance: 0.03, pointsPerSecond: 3 },
+    insane: { bulletSpawnChance: 0.05, pointsPerSecond: 5 },
+    'extreme demon': { bulletSpawnChance: 0.08, pointsPerSecond: 8 },
+  };
+  let difficulty = difficulties.easy;
+
+  // player cube
+  let cube = {
+    x: 100,
+    y: 100,
+    size: 40,
+    speed: 4,
+    hp: 3,
+    maxHp: 3,
+    exploding: false,
+    explosionParticles: [],
+    invincibleTimer: 0,
+  };
+
+  // powerups data
+  const powerUpsData = [
+    {id: 'extraHp', name: 'Extra HP', cost: 100, maxLevel: 3},
+    {id: 'speed', name: 'Speed Boost', cost: 120, maxLevel: 3},
+  ];
+
+  // store skins
+  const skinOptions = [
+    { id: 'default', name: 'Default', cost: 0, color: '#55aaff' },
+    { id: 'blue', name: 'Blue', cost: 150, color: '#3399ff' },
+    { id: 'green', name: 'Green', cost: 150, color: '#44cc44' },
+    { id: 'purple', name: 'Purple', cost: 150, color: '#aa55ff' },
+    { id: 'gold', name: 'Gold', cost: 300, color: '#ffd700' },
+    { id: 'rainbow', name: 'Rainbow', cost: 500, color: 'rainbow' },
+  ];
+
+  // player data saved
+  let playerData = {
+    coins: 0,
+    powerUps: { extraHp: 0, speed: 0 },
+    skins: { default: true },
+    selectedSkin: 'default',
+    rebirths: 0,
+  };
+
+  // keys
+  const keys = {};
+  window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+  window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+  // bullets
+  let bullets = [];
+
+  // particles for bg
+  let particles = [];
+  function createParticles() {
+    particles = [];
+    for(let i = 0; i < 100; i++) {
+      particles.push({
+        x: Math.random()*width,
+        y: Math.random()*height,
+        size: Math.random()*2 + 1,
+        speedY: 0.3 + Math.random()*0.3,
+        alpha: 0.5,
+      });
+    }
+  }
+  createParticles();
+
+  // Utility functions for drawing buttons with hover effects
+  function drawButton(x, y, w, h, text, hover, options={}) {
+    ctx.save();
+
+    // glowing shadow on hover
+    if(hover) {
+      ctx.shadowColor = '#5599ff';
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+    } else {
+      ctx.shadowColor = 'transparent';
+    }
+
+    // background with gradient
+    const grad = ctx.createLinearGradient(x, y, x, y+h);
+    grad.addColorStop(0, hover ? '#4c8fff' : '#3366cc');
+    grad.addColorStop(1, hover ? '#356bbf' : '#234c9a');
+    ctx.fillStyle = grad;
+    roundRect(ctx, x, y, w, h, 12);
+    ctx.fill();
+
+    // border
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = hover ? '#aaddff' : 'white';
+    roundRectStroke(ctx, x, y, w, h, 12);
+
+    // text
+    ctx.fillStyle = 'white';
+    ctx.font = options.font || '24px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + w/2, y + h/2);
+
+    ctx.restore();
+  }
+
+  // draw text centered in button with scaling for long text
+  function drawTextInButton(text, x, y, w, h) {
+    ctx.save();
+    ctx.font = '22px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    // measure and scale down if too wide
+    let widthText = ctx.measureText(text).width;
+    let scale = 1;
+    if(widthText > w - 20) {
+      scale = (w - 20) / widthText;
+    }
+    ctx.translate(x + w/2, y + h/2);
+    ctx.scale(scale, 1);
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  }
+
+  // draw glowing outline for selected buttons/skins
+  function drawGlowingOutline(x, y, w, h, color='#55aaff') {
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 15;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    roundRectStroke(ctx, x, y, w, h, 12);
+    ctx.restore();
+  }
+
+  // draw pulsating effect (for rebirth button)
+  function drawPulseEffect(x, y, w, h, baseColor='#5599ff', time) {
+    const glow = 0.6 + 0.4 * Math.sin(time * 6);
+    ctx.save();
+    ctx.shadowColor = `rgba(85, 153, 255, ${glow})`;
+    ctx.shadowBlur = 20 * glow;
+    ctx.strokeStyle = baseColor;
+    ctx.lineWidth = 3 + 2 * glow;
+    roundRectStroke(ctx, x, y, w, h, 12);
+    ctx.restore();
+  }
+
+  // particles update & draw
+  function updateParticles() {
+    for(let p of particles) {
+      p.y -= p.speedY;
+      if(p.y < 0) p.y = height;
+    }
+  }
+  function drawParticles() {
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = 'white';
+    for(let p of particles) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // explosion particles
+  function createExplosion(x, y) {
+    cube.explosionParticles = [];
+    for(let i = 0; i < 40; i++) {
+      cube.explosionParticles.push({
+        x, y,
+        vx: (Math.random() - 0.5) * 6,
+        vy: (Math.random() - 0.5) * 6,
+        size: Math.random() * 6 + 3,
+        alpha: 1,
+      });
+    }
+  }
+  function updateExplosion() {
+    ctx.save();
+    for(let p of cube.explosionParticles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.alpha -= 0.03;
+      if(p.alpha < 0) p.alpha = 0;
+
+      ctx.fillStyle = `rgba(255,100,100,${p.alpha})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    cube.explosionParticles = cube.explosionParticles.filter(p => p.alpha > 0);
+    if(cube.explosionParticles.length === 0) {
+      cube.exploding = false;
+      // after explosion ends, go to death screen
+      currentState = states.DEATH;
+    }
+  }
+
+  // reset player function
+  function resetPlayer() {
+    cube.x = width/2 - cube.size/2;
+    cube.y = height/2 - cube.size/2;
+    cube.hp = 3 + (playerData.powerUps.extraHp || 0);
+    cube.maxHp = cube.hp;
+    cube.speed = 4 + (playerData.powerUps.speed || 0);
+    cube.exploding = false;
+    cube.invincibleTimer = 0;
+    bullets = [];
+    score = 0;
+    lastScoreTime = performance.now();
+  }
+
+  // get player color by selected skin
+  function getPlayerColor() {
+    const skin = skinOptions.find(s => s.id === playerData.selectedSkin);
+    if(!skin) return '#55aaff';
+    if(skin.id === 'rainbow') {
+      const hue = (performance.now()/20) % 360;
+      return `hsl(${hue}, 100%, 70%)`;
+    }
+    return skin.color;
+  }
+
+  // spawn bullet randomly
+  function spawnBullet() {
+    const size = 8;
+    const edge = Math.floor(Math.random()*4);
+    let x, y, vx, vy;
+    switch(edge) {
+      case 0: // top
+        x = Math.random()*width;
+        y = -size;
+        vx = (cube.x + cube.size/2 - x) * 0.03;
+        vy = (cube.y + cube.size/2 - y) * 0.03;
+        break;
+      case 1: // right
+        x = width + size;
+        y = Math.random()*height;
+        vx = (cube.x + cube.size/2 - x) * 0.03;
+        vy = (cube.y + cube.size/2 - y) * 0.03;
+        break;
+      case 2: // bottom
+        x = Math.random()*width;
+        y = height + size;
+        vx = (cube.x + cube.size/2 - x) * 0.03;
+        vy = (cube.y + cube.size/2 - y) * 0.03;
+        break;
+      case 3: // left
+        x = -size;
+        y = Math.random()*height;
+        vx = (cube.x + cube.size/2 - x) * 0.03;
+        vy = (cube.y + cube.size/2 - y) * 0.03;
+        break;
+    }
+    bullets.push({x, y, vx, vy, size});
+  }
+
+  // update bullets & check collisions
+  function updateBullets() {
+    const hitbox = {x: cube.x, y: cube.y, w: cube.size, h: cube.size};
+    for(let i = bullets.length -1; i >= 0; i--) {
+      const b = bullets[i];
+      b.x += b.vx;
+      b.y += b.vy;
+
+      // Remove bullets off screen
+      if(b.x < -b.size || b.x > width + b.size || b.y < -b.size || b.y > height + b.size) {
+        bullets.splice(i,1);
+        continue;
+      }
+
+      // collision check
+      if(!cube.exploding && cube.invincibleTimer <= 0) {
+        if(b.x + b.size > hitbox.x && b.x - b.size < hitbox.x + hitbox.w &&
+           b.y + b.size > hitbox.y && b.y - b.size < hitbox.y + hitbox.h) {
+          bullets.splice(i,1);
+          cube.hp--;
+          cube.invincibleTimer = 60; // 1 second invincible
+          if(cube.hp <= 0) {
+            // explode
+            cube.exploding = true;
+            createExplosion(cube.x + cube.size/2, cube.y + cube.size/2);
+          }
+        }
+      }
+    }
+  }
+
+  // Buttons storage
+  let menuButtons = [];
+  let difficultyButtons = [];
+  let optionsButtons = [];
+  let optionsBackButton = null;
+  let storePowerUpsButtons = [];
+  let storeSkinsButtons = [];
+  let storeBackButton = null;
+  let pauseButton = null;
+  let pauseResumeButton = null;
+  let deathMainMenuButton = null;
+  let deathRebirthButton = null;
+  let mainMenuRebirthButton = null;
+
+  // DRAW MENU
+  function drawMenu() {
+    ctx.clearRect(0, 0, width, height);
+    drawParticles();
+
+    // Title with shadow glow
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.font = '72px monospace';
+    ctx.fillStyle = '#aaccff';
+    ctx.shadowColor = '#5599ff';
+    ctx.shadowBlur = 20;
+    ctx.fillText('Untitled cube game', width/2, 150);
+    ctx.restore();
+
+    // Buttons
+    const btnW = 320;
+    const btnH = 70;
+    const startY = 300;
+    const margin = 30;
+    menuButtons = [];
+
+    ['Play', 'Options', 'Store'].forEach((label, i) => {
+      const x = width/2 - btnW/2;
+      const y = startY + i * (btnH + margin);
+      const hover = pointInRect(mouseX, mouseY, x, y, btnW, btnH);
+      drawButton(x, y, btnW, btnH, label, hover);
+      menuButtons.push({x, y, w: btnW, h: btnH, label});
+    });
+
+    // Rebirth progress bar and button below
+    const barX = width/2 - 250/2;
+    const barY = startY + 3 * (btnH + margin) + 30;
+    const barW = 250;
+    const barH = 24;
+
+    // progress ratio
+    const progress = Math.min(playerData.coins / rebirthCost, 1);
+    // background bar
+    ctx.fillStyle = '#222';
+    roundRect(ctx, barX, barY, barW, barH, 12);
+    ctx.fill();
+    // filled bar
+    ctx.fillStyle = '#5599ff';
+    roundRect(ctx, barX, barY, barW * progress, barH, 12);
+    ctx.fill();
+    // border
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 2;
+    roundRectStroke(ctx, barX, barY, barW, barH, 12);
+
+    // text
+    ctx.fillStyle = 'white';
+    ctx.font = '20px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`Rebirth Progress: ${Math.floor(progress*100)}% (${playerData.coins} / ${rebirthCost} coins)`, width/2, barY + barH/2);
+
+    // Rebirth button
+    const rbW = 200;
+    const rbH = 60;
+    const rbX = width/2 - rbW/2;
+    const rbY = barY + barH + 30;
+    const canRebirth = playerData.coins >= rebirthCost;
+    const hoverRebirth = pointInRect(mouseX, mouseY, rbX, rbY, rbW, rbH);
+    if(canRebirth) {
+      drawPulseEffect(rbX, rbY, rbW, rbH, '#5599ff', performance.now()/1000);
+      drawButton(rbX, rbY, rbW, rbH, 'Rebirth', hoverRebirth);
+    } else {
+      drawButton(rbX, rbY, rbW, rbH, 'Rebirth', hoverRebirth);
+    }
+    mainMenuRebirthButton = {x: rbX, y: rbY, w: rbW, h: rbH, canRebirth};
+  }
+
+  // DRAW DIFFICULTY
+  function drawDifficulty() {
+    ctx.clearRect(0, 0, width, height);
+    drawParticles();
+
+    ctx.fillStyle = 'white';
+    ctx.font = '48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Select Difficulty', width/2, 120);
+
+    difficultyButtons = [];
+    const btnW = 280;
+    const btnH = 60;
+    const startY = 180;
+    const margin = 20;
+    const labels = Object.keys(difficulties);
+
+    labels.forEach((label, i) => {
+      const x = width/2 - btnW/2;
+      const y = startY + i * (btnH + margin);
+      const hover = pointInRect(mouseX, mouseY, x, y, btnW, btnH);
+      drawButton(x, y, btnW, btnH, label.charAt(0).toUpperCase() + label.slice(1), hover);
+      difficultyButtons.push({x, y, w: btnW, h: btnH, label});
+    });
+
+    // Back button
+    const backW = 140;
+    const backH = 50;
+    const backX = 20;
+    const backY = height - backH - 20;
+    const hoverBack = pointInRect(mouseX, mouseY, backX, backY, backW, backH);
+    drawButton(backX, backY, backW, backH, 'Back', hoverBack);
+    difficultyButtons.push({x: backX, y: backY, w: backW, h: backH, label: 'back'});
+  }
+
+  // DRAW OPTIONS
+  function drawOptions() {
+    ctx.clearRect(0, 0, width, height);
+    drawParticles();
+
+    ctx.fillStyle = 'white';
+    ctx.font = '48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Options', width/2, 100);
+
+    // Music toggle and volume slider
+    const toggleX = width/2 - 150;
+    const toggleY = 150;
+    const toggleW = 300;
+    const toggleH = 60;
+
+    // Draw toggle button
+    const hoverToggle = pointInRect(mouseX, mouseY, toggleX, toggleY, toggleW, toggleH);
+    drawButton(toggleX, toggleY, toggleW, toggleH, `Music: ${musicOn ? 'On' : 'Off'}`, hoverToggle);
+
+    // Volume slider
+    const sliderX = toggleX;
+    const sliderY = toggleY + toggleH + 40;
+    const sliderW = toggleW;
+    const sliderH = 20;
+
+    ctx.fillStyle = '#444';
+    roundRect(ctx, sliderX, sliderY, sliderW, sliderH, 10);
+    ctx.fill();
+
+    // slider knob
+    const knobX = sliderX + musicVolume * sliderW;
+    const knobY = sliderY + sliderH / 2;
+    ctx.beginPath();
+    ctx.fillStyle = '#5599ff';
+    ctx.shadowColor = '#5599ff';
+    ctx.shadowBlur = 8;
+    ctx.arc(knobX, knobY, 12, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Back button
+    const backW = 140;
+    const backH = 50;
+    const backX = 20;
+    const backY = height - backH - 20;
+    const hoverBack = pointInRect(mouseX, mouseY, backX, backY, backW, backH);
+    drawButton(backX, backY, backW, backH, 'Back', hoverBack);
+
+    optionsButtons = [
+      {x: toggleX, y: toggleY, w: toggleW, h: toggleH, label: 'toggleMusic', hover: hoverToggle},
+      {x: sliderX, y: sliderY, w: sliderW, h: sliderH, label: 'volumeSlider'},
+      {x: backX, y: backY, w: backW, h: backH, label: 'back', hover: hoverBack},
+    ];
+  }
+
+  // DRAW STORE
+  function drawStore() {
+    ctx.clearRect(0, 0, width, height);
+    drawParticles();
+
+    ctx.fillStyle = 'white';
+    ctx.font = '48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Store', width/2, 80);
+
+    const startX = width/2 - 320;
+    const startY = 140;
+    const btnW = 280;
+    const btnH = 55;
+    const margin = 15;
+
+    ctx.font = '22px monospace';
+
+    // PowerUps
+    ctx.fillText('Power Ups', startX + btnW/2, startY - 35);
+    storePowerUpsButtons = [];
+    powerUpsData.forEach((pu, i) => {
+      const x = startX;
+      const y = startY + i * (btnH + margin);
+      const hover = pointInRect(mouseX, mouseY, x, y, btnW, btnH);
+      // Button background
+      drawButton(x, y, btnW, btnH, '', hover);
+      // Text inside button
+      ctx.fillStyle = 'white';
+      const level = playerData.powerUps[pu.id] || 0;
+      let btnText = `${pu.name} (Lvl ${level}) - Cost: ${pu.cost}`;
+      if(level >= pu.maxLevel) btnText = `${pu.name} (MAX)`;
+      drawTextInButton(btnText, x, y, btnW, btnH);
+      storePowerUpsButtons.push({x, y, w: btnW, h: btnH, powerUpId: pu.id, canBuy: playerData.coins >= pu.cost && level < pu.maxLevel, hover});
+    });
+
+    // Skins
+    ctx.fillText('Skins', startX + btnW*1.5 + 100, startY - 35);
+    storeSkinsButtons = [];
+    skinOptions.forEach((skin, i) => {
+      const x = startX + btnW + 100;
+      const y = startY + i * (btnH + margin);
+      const hover = pointInRect(mouseX, mouseY, x, y, btnW, btnH);
+      drawButton(x, y, btnW, btnH, '', hover);
+      // fill button with skin color
+      if(skin.id === 'rainbow') {
+        // rainbow gradient fill inside button
+        const grad = ctx.createLinearGradient(x, y, x + btnW, y + btnH);
+        grad.addColorStop(0, 'red');
+        grad.addColorStop(0.2, 'orange');
+        grad.addColorStop(0.4, 'yellow');
+        grad.addColorStop(0.6, 'green');
+        grad.addColorStop(0.8, 'blue');
+        grad.addColorStop(1, 'violet');
+        ctx.fillStyle = grad;
+      } else {
+        ctx.fillStyle = skin.color;
+      }
+      roundRect(ctx, x + 5, y + 5, btnW - 10, btnH - 10, 12);
+      ctx.fill();
+
+      ctx.fillStyle = 'white';
+      drawTextInButton(skin.name + (playerData.skins[skin.id] ? '' : ` - Cost: ${skin.cost}`), x, y, btnW, btnH);
+
+      if(playerData.selectedSkin === skin.id) {
+        drawGlowingOutline(x, y, btnW, btnH, '#aaffff');
+      }
+
+      storeSkinsButtons.push({x, y, w: btnW, h: btnH, skinId: skin.id, canBuy: !playerData.skins[skin.id] && playerData.coins >= skin.cost, hover});
+    });
+
+    // Back button
+    const backW = 140;
+    const backH = 50;
+    const backX = 20;
+    const backY = height - backH - 20;
+    const hoverBack = pointInRect(mouseX, mouseY, backX, backY, backW, backH);
+    drawButton(backX, backY, backW, backH, 'Back', hoverBack);
+    storeBackButton = {x: backX, y: backY, w: backW, h: backH};
+  }
+
+  // DRAW GAME
+  function drawGame() {
+    ctx.clearRect(0, 0, width, height);
+    drawParticles();
+
+    // player
+    ctx.fillStyle = getPlayerColor();
+    ctx.fillRect(cube.x, cube.y, cube.size, cube.size);
+
+    // health bar background
+    const hpBarWidth = 200;
+    const hpBarHeight = 24;
+    const hpX = 20;
+    const hpY = 20;
+    ctx.fillStyle = '#222';
+    roundRect(ctx, hpX, hpY, hpBarWidth, hpBarHeight, 12);
+    ctx.fill();
+
+    // health bar fill
+    const hpRatio = cube.hp / cube.maxHp;
+    ctx.fillStyle = '#ff5555';
+    roundRect(ctx, hpX, hpY, hpBarWidth * hpRatio, hpBarHeight, 12);
+    ctx.fill();
+
+    // health bar border
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 2;
+    roundRectStroke(ctx, hpX, hpY, hpBarWidth, hpBarHeight, 12);
+
+    // health text
+    ctx.fillStyle = 'white';
+    ctx.font = '20px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`HP: ${cube.hp} / ${cube.maxHp}`, hpX + hpBarWidth/2, hpY + hpBarHeight/2);
+
+    // score display
+    ctx.font = '22px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`Score: ${Math.floor(score)}`, width - 20, 40);
+
+    // coins display
+    ctx.fillText(`Coins: ${playerData.coins}`, width - 20, 70);
+
+    // bullets
+    ctx.fillStyle = 'red';
+    bullets.forEach(b => {
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // explosion particles if exploding
+    if(cube.exploding) updateExplosion();
+
+    // pause button small top-right
+    const pbSize = 50;
+    const pbX = width - pbSize - 10;
+    const pbY = 10;
+    pauseButton = {x: pbX, y: pbY, w: pbSize, h: pbSize};
+    // draw circle button with pause icon and subtle shadow
+    ctx.save();
+    ctx.shadowColor = '#5599ff';
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = '#3366cc';
+    ctx.beginPath();
+    ctx.arc(pbX + pbSize/2, pbY + pbSize/2, pbSize/2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'white';
+    const barWidth = 10;
+    const barHeight = 30;
+    const barX1 = pbX + pbSize/2 - 15;
+    const barX2 = pbX + pbSize/2 + 5;
+    const barY = pbY + pbSize/2 - barHeight/2;
+    ctx.fillRect(barX1, barY, barWidth, barHeight);
+    ctx.fillRect(barX2, barY, barWidth, barHeight);
+    ctx.restore();
+  }
+
+  // DRAW PAUSE OVERLAY
+  function drawPause() {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.fillStyle = 'white';
+    ctx.font = '48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Paused', width/2, height/2 - 60);
+
+    // Resume button
+    const btnW = 250;
+    const btnH = 70;
+    const x = width/2 - btnW/2;
+    const y = height/2 - btnH/2 + 20;
+    const hover = pointInRect(mouseX, mouseY, x, y, btnW, btnH);
+    drawButton(x, y, btnW, btnH, 'Resume', hover);
+    pauseResumeButton = {x, y, w: btnW, h: btnH};
+  }
+
+  // DRAW DEATH SCREEN
+  function drawDeath() {
+    ctx.clearRect(0, 0, width, height);
+    drawParticles();
+
+    ctx.fillStyle = 'white';
+    ctx.font = '48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('You Died!', width/2, height/2 - 100);
+
+    // Score summary
+    ctx.font = '28px monospace';
+    ctx.fillText(`Final Score: ${Math.floor(score)}`, width/2, height/2 - 40);
+
+    // Buttons
+    const btnW = 220;
+    const btnH = 60;
+    const margin = 30;
+    const startX = width/2 - btnW/2;
+    const startY = height/2;
+    const hoverMenu = pointInRect(mouseX, mouseY, startX, startY, btnW, btnH);
+    const hoverRebirth = pointInRect(mouseX, mouseY, startX, startY + btnH + margin, btnW, btnH);
+
+    drawButton(startX, startY, btnW, btnH, 'Main Menu', hoverMenu);
+    drawButton(startX, startY + btnH + margin, btnW, btnH, 'Rebirth', hoverRebirth);
+
+    deathMainMenuButton = {x: startX, y: startY, w: btnW, h: btnH};
+    deathRebirthButton = {x: startX, y: startY + btnH + margin, w: btnW, h: btnH, canRebirth: playerData.coins >= rebirthCost};
+    if(!deathRebirthButton.canRebirth) {
+      ctx.globalAlpha = 0.4;
+      drawButton(startX, startY + btnH + margin, btnW, btnH, 'Rebirth', false);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // HANDLE CLICK EVENTS
+  function handleClick() {
+    switch(currentState) {
+      case states.MENU:
+        for(let btn of menuButtons) {
+          if(pointInRect(mouseX, mouseY, btn.x, btn.y, btn.w, btn.h)) {
+            if(btn.label === 'Play') {
+              currentState = states.DIFFICULTY;
+            } else if(btn.label === 'Options') {
+              currentState = states.OPTIONS;
+            } else if(btn.label === 'Store') {
+              currentState = states.STORE;
+            }
+          }
+        }
+        if(mainMenuRebirthButton && pointInRect(mouseX, mouseY, mainMenuRebirthButton.x, mainMenuRebirthButton.y, mainMenuRebirthButton.w, mainMenuRebirthButton.h)) {
+          if(mainMenuRebirthButton.canRebirth) {
+            rebirth();
+          }
+        }
+        break;
+
+      case states.DIFFICULTY:
+        for(let btn of difficultyButtons) {
+          if(pointInRect(mouseX, mouseY, btn.x, btn.y, btn.w, btn.h)) {
+            if(btn.label === 'back') {
+              currentState = states.MENU;
+            } else if(difficulties[btn.label]) {
+              difficulty = difficulties[btn.label];
+              resetPlayer();
+              currentState = states.GAME;
+            }
+          }
+        }
+        break;
+
+      case states.OPTIONS:
+        for(let btn of optionsButtons) {
+          if(btn.label === 'toggleMusic' && pointInRect(mouseX, mouseY, btn.x, btn.y, btn.w, btn.h)) {
+            musicOn = !musicOn;
+            if(musicOn) music.play();
+            else music.pause();
+          }
+          if(btn.label === 'back' && pointInRect(mouseX, mouseY, btn.x, btn.y, btn.w, btn.h)) {
+            currentState = states.MENU;
+          }
+          if(btn.label === 'volumeSlider' && pointInRect(mouseX, mouseY, btn.x, btn.y, btn.w, btn.h)) {
+            // volume set handled by mousemove with mouseDown
+          }
+        }
+        break;
+
+      case states.STORE:
+        for(let btn of storePowerUpsButtons) {
+          if(pointInRect(mouseX, mouseY, btn.x, btn.y, btn.w, btn.h) && btn.canBuy) {
+            const level = playerData.powerUps[btn.powerUpId] || 0;
+            const puData = powerUpsData.find(p => p.id === btn.powerUpId);
+            if(level < puData.maxLevel && playerData.coins >= puData.cost) {
+              playerData.coins -= puData.cost;
+              playerData.powerUps[btn.powerUpId] = level + 1;
+            }
+          }
+        }
+        for(let btn of storeSkinsButtons) {
+          if(pointInRect(mouseX, mouseY, btn.x, btn.y, btn.w, btn.h)) {
+            if(!playerData.skins[btn.skinId] && playerData.coins >= skinOptions.find(s => s.id === btn.skinId).cost) {
+              playerData.coins -= skinOptions.find(s => s.id === btn.skinId).cost;
+              playerData.skins[btn.skinId] = true;
+              playerData.selectedSkin = btn.skinId;
+            } else if(playerData.skins[btn.skinId]) {
+              playerData.selectedSkin = btn.skinId;
+            }
+          }
+        }
+        if(storeBackButton && pointInRect(mouseX, mouseY, storeBackButton.x, storeBackButton.y, storeBackButton.w, storeBackButton.h)) {
+          currentState = states.MENU;
+        }
+        break;
+
+      case states.GAME:
+        if(pauseButton && pointInRect(mouseX, mouseY, pauseButton.x, pauseButton.y, pauseButton.w, pauseButton.h)) {
+          currentState = states.PAUSED;
+        }
+        break;
+
+      case states.PAUSED:
+        if(pauseResumeButton && pointInRect(mouseX, mouseY, pauseResumeButton.x, pauseResumeButton.y, pauseResumeButton.w, pauseResumeButton.h)) {
+          currentState = states.GAME;
+        }
+        break;
+
+      case states.DEATH:
+        if(deathMainMenuButton && pointInRect(mouseX, mouseY, deathMainMenuButton.x, deathMainMenuButton.y, deathMainMenuButton.w, deathMainMenuButton.h)) {
+          currentState = states.MENU;
+        }
+        if(deathRebirthButton && pointInRect(mouseX, mouseY, deathRebirthButton.x, deathRebirthButton.y, deathRebirthButton.w, deathRebirthButton.h) && deathRebirthButton.canRebirth) {
+          rebirth();
+          resetPlayer();
+          currentState = states.GAME;
+        }
+        break;
+    }
+  }
+
+  // handle mouse move & down for options volume slider
+  function handleMouseMove() {
+    if(currentState === states.OPTIONS && mouseDown) {
+      const slider = optionsButtons.find(b => b.label === 'volumeSlider');
+      if(slider) {
+        let vol = (mouseX - slider.x) / slider.w;
+        vol = Math.min(1, Math.max(0, vol));
+        musicVolume = vol;
+        music.volume = musicVolume;
+      }
+    }
+  }
+
+  // rebirth logic
+  function rebirth() {
+    if(playerData.coins >= rebirthCost) {
+      playerData.coins -= rebirthCost;
+      playerData.rebirths++;
+      // reset upgrades and skins
+      playerData.powerUps = {extraHp: 0, speed: 0};
+      playerData.skins = {default: true};
+      playerData.selectedSkin = 'default';
+    }
+  }
+
+  // update & game loop
+  function update(delta) {
+    if(currentState === states.GAME) {
+      if(!cube.exploding) {
+        // move player
+        if(keys['w'] || keys['arrowup']) cube.y -= cube.speed;
+        if(keys['s'] || keys['arrowdown']) cube.y += cube.speed;
+        if(keys['a'] || keys['arrowleft']) cube.x -= cube.speed;
+        if(keys['d'] || keys['arrowright']) cube.x += cube.speed;
+
+        // clamp player inside canvas
+        cube.x = Math.min(width - cube.size, Math.max(0, cube.x));
+        cube.y = Math.min(height - cube.size, Math.max(0, cube.y));
+
+        // invincible timer
+        if(cube.invincibleTimer > 0) cube.invincibleTimer -= 1;
+
+        // spawn bullets randomly by difficulty
+        if(Math.random() < difficulty.bulletSpawnChance) spawnBullet();
+
+        updateBullets();
+
+        // update score per second survived (scaled by difficulty)
+        let now = performance.now();
+        if(now - lastScoreTime >= 1000) {
+          score += difficulty.pointsPerSecond;
+          playerData.coins += Math.floor(difficulty.pointsPerSecond / 10);
+          lastScoreTime = now;
+        }
+      } else {
+        updateExplosion();
+      }
+    }
+    updateParticles();
+  }
+
+  // main draw
+  function draw() {
+    switch(currentState) {
+      case states.MENU: drawMenu(); break;
+      case states.DIFFICULTY: drawDifficulty(); break;
+      case states.OPTIONS: drawOptions(); break;
+      case states.STORE: drawStore(); break;
+      case states.GAME: drawGame(); break;
+      case states.PAUSED: 
+        drawGame();
+        drawPause();
+        break;
+      case states.DEATH: drawDeath(); break;
+    }
+  }
+
+  // main loop
+  let lastTime = performance.now();
+  function loop() {
+    let now = performance.now();
+    let delta = (now - lastTime) / 1000;
+    lastTime = now;
+
+    handleMouseMove();
+    update(delta);
+    draw();
+
+    requestAnimationFrame(loop);
+  }
+
+  // initial setup
+  resetPlayer();
+  music.play();
+
+  // click handler
+  window.addEventListener('mousedown', () => {
+    handleClick();
+  });
+
+  loop();
+
+})();
+</script>
+</body>
+</html>
